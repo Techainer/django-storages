@@ -30,6 +30,7 @@ try:
 except ImportError as e:
     raise ImproperlyConfigured("Could not load Boto3's S3 bindings. %s" % e)
 
+from .s3refreshablesession import InstanceMetadataBotoSession
 
 # NOTE: these are defined as functions so both can be tested
 def _use_cryptography_signer():
@@ -262,7 +263,12 @@ class S3Boto3Storage(BaseStorage):
         self._bucket = None
         self._connections = threading.local()
 
-        self.access_key, self.secret_key = self._get_access_keys()
+        # Using Refreshable Session or Not 
+        self.is_refreshable_session = settings("REFRESHABLE_SESSION", False)
+        if self.is_refreshable_session: 
+            self.refreshable_instance = InstanceMetadataBotoSession(region_name=self.region_name)
+            self.refreshable_session = self.refreshable_instance.refreshable_session()
+
         self.security_token = self._get_security_token()
 
         if not self.config:
@@ -271,6 +277,14 @@ class S3Boto3Storage(BaseStorage):
                 signature_version=self.signature_version,
                 proxies=self.proxies,
             )
+
+    @property
+    def access_key(self): 
+        return setting('AWS_S3_ACCESS_KEY_ID', setting('AWS_ACCESS_KEY_ID')) if not self.is_refreshable_session else self.refreshable_instance.access_key
+
+    @property
+    def secret_key(self):
+        return setting('AWS_S3_SECRET_ACCESS_KEY', setting('AWS_SECRET_ACCESS_KEY')) if not self.is_refreshable_session else self.refreshable_instance.secret_key
 
     def get_cloudfront_signer(self, key_id, key):
         return _cloud_front_signer_from_pem(key_id, key)
@@ -290,8 +304,8 @@ class S3Boto3Storage(BaseStorage):
             cloudfront_signer = None
 
         return {
-            "access_key": setting('AWS_S3_ACCESS_KEY_ID', setting('AWS_ACCESS_KEY_ID')),
-            "secret_key": setting('AWS_S3_SECRET_ACCESS_KEY', setting('AWS_SECRET_ACCESS_KEY')),
+            "access_key": self.access_key,
+            "secret_key": self.secret_key,
             "file_overwrite": setting('AWS_S3_FILE_OVERWRITE', True),
             "object_parameters": setting('AWS_S3_OBJECT_PARAMETERS', {}),
             "bucket_name": setting('AWS_STORAGE_BUCKET_NAME'),
@@ -337,7 +351,7 @@ class S3Boto3Storage(BaseStorage):
     def connection(self):
         connection = getattr(self._connections, 'connection', None)
         if connection is None:
-            session = boto3.session.Session()
+            session = boto3.session.Session() if not self.is_refreshable_session else self.refreshable_session
             self._connections.connection = session.resource(
                 's3',
                 aws_access_key_id=self.access_key,
@@ -360,16 +374,6 @@ class S3Boto3Storage(BaseStorage):
         if self._bucket is None:
             self._bucket = self.connection.Bucket(self.bucket_name)
         return self._bucket
-
-    def _get_access_keys(self):
-        """
-        Gets the access keys to use when accessing S3. If none is
-        provided in the settings then get them from the environment
-        variables.
-        """
-        access_key = self.access_key or lookup_env(S3Boto3Storage.access_key_names)
-        secret_key = self.secret_key or lookup_env(S3Boto3Storage.secret_key_names)
-        return access_key, secret_key
 
     def _get_security_token(self):
         """
