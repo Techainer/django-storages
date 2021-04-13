@@ -48,6 +48,7 @@ class InstanceMetadataBotoSession:
 
         self.access_key = None 
         self.secret_key = None 
+        self.security_token = None
 
     def __get_session_credentials(self):
         """
@@ -73,9 +74,10 @@ class InstanceMetadataBotoSession:
 
         self.access_key = credentials.access_key
         self.secret_key = credentials.secret_key
+        self.security_token = credentials.token
         
         return credentials
-
+    
     def refreshable_session(self) -> Session:
         """
         Get refreshable boto3 session.

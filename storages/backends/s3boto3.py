@@ -247,7 +247,6 @@ class S3Boto3Storage(BaseStorage):
     access_key_names = ['AWS_S3_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID']
     secret_key_names = ['AWS_S3_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY']
     security_token_names = ['AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN']
-    security_token = None
     is_refreshable_session = setting("REFRESHABLE_SESSION", False)
 
     # Using Refreshable Session or Not 
@@ -271,7 +270,6 @@ class S3Boto3Storage(BaseStorage):
 
         self._bucket = None
         self._connections = threading.local()
-        self.security_token = self._get_security_token()
 
         if not self.config:
             self.config = Config(
@@ -287,6 +285,10 @@ class S3Boto3Storage(BaseStorage):
     @property
     def secret_key(self):
         return setting('AWS_S3_SECRET_ACCESS_KEY', setting('AWS_SECRET_ACCESS_KEY')) if not self.is_refreshable_session else self.refreshable_instance.secret_key
+
+    @property
+    def security_token(self):
+        return setting('AWS_SESSION_TOKEN', setting('AWS_SECURITY_TOKEN')) if not self.is_refreshable_session else self.refreshable_instance.security_token
 
     def get_cloudfront_signer(self, key_id, key):
         return _cloud_front_signer_from_pem(key_id, key)
@@ -352,13 +354,22 @@ class S3Boto3Storage(BaseStorage):
     @property
     def connection(self):
         connection = getattr(self._connections, 'connection', None)
-        if connection is None:
-            session = boto3.session.Session() if not self.is_refreshable_session else self.refreshable_session
+
+        if self.is_refreshable_session:
+             session = self.refreshable_session
+
+             return session.resource(
+                's3',
+                region_name=self.region_name,
+                use_ssl=self.use_ssl,
+                endpoint_url=self.endpoint_url,
+                config=self.config,
+                verify=self.verify,
+            )
+        elif connection is None:
+            session = boto3.session.Session(aws_access_key_id=self.access_key, aws_secret_access_key=self.secret_key, aws_session_token=self.security_token) 
             self._connections.connection = session.resource(
                 's3',
-                aws_access_key_id=self.access_key,
-                aws_secret_access_key=self.secret_key,
-                aws_session_token=self.security_token,
                 region_name=self.region_name,
                 use_ssl=self.use_ssl,
                 endpoint_url=self.endpoint_url,
@@ -376,14 +387,6 @@ class S3Boto3Storage(BaseStorage):
         if self._bucket is None:
             self._bucket = self.connection.Bucket(self.bucket_name)
         return self._bucket
-
-    def _get_security_token(self):
-        """
-        Gets the security token to use when accessing S3. Get it from
-        the environment variables.
-        """
-        security_token = self.security_token or lookup_env(S3Boto3Storage.security_token_names)
-        return security_token
 
     def _clean_name(self, name):
         """
