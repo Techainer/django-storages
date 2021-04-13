@@ -266,7 +266,7 @@ class S3Boto3Storage(BaseStorage):
         # Using Refreshable Session or Not 
         self.is_refreshable_session = settings("REFRESHABLE_SESSION", False)
         if self.is_refreshable_session: 
-            self.refreshable_instance = InstanceMetadataBotoSession(region_name=self.region_name)
+            self.refreshable_instance = InstanceMetadataBotoSession(region_name=setting('AWS_S3_REGION_NAME'))
             self.refreshable_session = self.refreshable_instance.refreshable_session()
 
         self.security_token = self._get_security_token()
