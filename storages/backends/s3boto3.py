@@ -248,6 +248,7 @@ class S3Boto3Storage(BaseStorage):
     secret_key_names = ['AWS_S3_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY']
     security_token_names = ['AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN']
     security_token = None
+    is_refreshable_session = setting("REFRESHABLE_SESSION", False)
 
     def __init__(self, **settings):
         super().__init__(**settings)
@@ -264,7 +265,6 @@ class S3Boto3Storage(BaseStorage):
         self._connections = threading.local()
 
         # Using Refreshable Session or Not 
-        self.is_refreshable_session = settings("REFRESHABLE_SESSION", False)
         if self.is_refreshable_session: 
             self.refreshable_instance = InstanceMetadataBotoSession(region_name=setting('AWS_S3_REGION_NAME'))
             self.refreshable_session = self.refreshable_instance.refreshable_session()
