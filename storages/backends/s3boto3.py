@@ -356,9 +356,9 @@ class S3Boto3Storage(BaseStorage):
         connection = getattr(self._connections, 'connection', None)
 
         if self.is_refreshable_session:
-             session = self.refreshable_session
+            session = self.refreshable_session
 
-             return session.resource(
+            self._connections.connection = session.resource(
                 's3',
                 region_name=self.region_name,
                 use_ssl=self.use_ssl,
