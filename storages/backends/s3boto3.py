@@ -269,6 +269,7 @@ class S3Boto3Storage(BaseStorage):
             self.url_protocol = 'https:'
 
         self._bucket = None
+        self._external_bucket = None
         self._connections = threading.local()
 
         if not self.config:
@@ -307,6 +308,7 @@ class S3Boto3Storage(BaseStorage):
         else:
             cloudfront_signer = None
 
+        self.custom_domain = setting('AWS_S3_CUSTOM_DOMAIN', False)
         return {
             "access_key": self.access_key,
             "secret_key": self.secret_key,
@@ -331,7 +333,8 @@ class S3Boto3Storage(BaseStorage):
                 'image/svg+xml',
             )),
             "url_protocol": setting('AWS_S3_URL_PROTOCOL', 'http:'),
-            "endpoint_url": setting('AWS_S3_ENDPOINT_URL'),
+            "endpoint_url": setting('AWS_S3_ENDPOINT_URL').strip("/") + "/",
+            "endpoint_external_url": setting('AWS_S3_ENDPOINT_EXTERNAL_URL', setting('AWS_S3_ENDPOINT_URL')).strip("/") + "/",
             "proxies": setting('AWS_S3_PROXIES'),
             "region_name": setting('AWS_S3_REGION_NAME'),
             "use_ssl": setting('AWS_S3_USE_SSL', True),
@@ -379,6 +382,33 @@ class S3Boto3Storage(BaseStorage):
         return self._connections.connection
 
     @property
+    def external_connection(self):
+        connection = getattr(self._connections, 'external_connection', None)
+
+        if self.is_refreshable_session:
+            session = self.refreshable_session
+
+            self._connections.external_connection = session.resource(
+                's3',
+                region_name=self.region_name,
+                use_ssl=self.use_ssl,
+                endpoint_url=self.endpoint_external_url,
+                config=self.config,
+                verify=self.verify,
+            )
+        elif connection is None:
+            session = boto3.session.Session(aws_access_key_id=self.access_key, aws_secret_access_key=self.secret_key, aws_session_token=self.security_token) 
+            self._connections.external_connection = session.resource(
+                's3',
+                region_name=self.region_name,
+                use_ssl=self.use_ssl,
+                endpoint_url=self.endpoint_external_url,
+                config=self.config,
+                verify=self.verify,
+            )
+        return self._connections.external_connection
+
+    @property
     def bucket(self):
         """
         Get the current bucket. If there is no current bucket object
@@ -387,6 +417,16 @@ class S3Boto3Storage(BaseStorage):
         if self._bucket is None:
             self._bucket = self.connection.Bucket(self.bucket_name)
         return self._bucket
+
+    @property
+    def external_bucket(self):
+        """
+        Get the current bucket. If there is no current bucket object
+        create it.
+        """
+        if self._external_bucket is None:
+            self._external_bucket = self.external_connection.Bucket(self.bucket_name)
+        return self._external_bucket
 
     def _clean_name(self, name):
         """
@@ -569,10 +609,8 @@ class S3Boto3Storage(BaseStorage):
         if self.custom_domain:
             url = "{}//{}/{}".format(
                 self.url_protocol, self.custom_domain, filepath_to_uri(name))
-
             if self.querystring_auth and self.cloudfront_signer:
                 expiration = datetime.utcnow() + timedelta(seconds=expire)
-
                 return self.cloudfront_signer.generate_presigned_url(url, date_less_than=expiration)
 
             return url
@@ -580,8 +618,10 @@ class S3Boto3Storage(BaseStorage):
         params = parameters.copy() if parameters else {}
         params['Bucket'] = self.bucket.name
         params['Key'] = name
-        url = self.bucket.meta.client.generate_presigned_url('get_object', Params=params,
+        url = self.external_bucket.meta.client.generate_presigned_url('get_object', Params=params,
                                                              ExpiresIn=expire, HttpMethod=http_method)
+        # url = "{0}{1}".format(self.endpoint_external_url, url[len(self.endpoint_url):])
+
         if self.querystring_auth:
             return url
         return self._strip_signing_parameters(url)
