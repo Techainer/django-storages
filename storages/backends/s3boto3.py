@@ -291,6 +291,10 @@ class S3Boto3Storage(BaseStorage):
     def security_token(self):
         return setting('AWS_SESSION_TOKEN', setting('AWS_SECURITY_TOKEN')) if not self.is_refreshable_session else self.refreshable_instance.security_token
 
+    @property
+    def refreshable_session_standalone(self):
+        return self.refreshable_instance.refreshable_session()
+
     def get_cloudfront_signer(self, key_id, key):
         return _cloud_front_signer_from_pem(key_id, key)
 
@@ -359,16 +363,29 @@ class S3Boto3Storage(BaseStorage):
         connection = getattr(self._connections, 'connection', None)
 
         if self.is_refreshable_session:
-            session = self.refreshable_session
-
-            self._connections.connection = session.resource(
-                's3',
-                region_name=self.region_name,
-                use_ssl=self.use_ssl,
-                endpoint_url=self.endpoint_url,
-                config=self.config,
-                verify=self.verify,
-            )
+            try:
+                session = self.refreshable_session
+                
+                self._connections.connection = session.resource(
+                    's3',
+                    region_name=self.region_name,
+                    use_ssl=self.use_ssl,
+                    endpoint_url=self.endpoint_url,
+                    config=self.config,
+                    verify=self.verify,
+                )
+            except KeyError:
+                # Handle threadsafe 
+                session = self.refreshable_session_standalone
+                
+                self._connections.connection = session.resource(
+                    's3',
+                    region_name=self.region_name,
+                    use_ssl=self.use_ssl,
+                    endpoint_url=self.endpoint_url,
+                    config=self.config,
+                    verify=self.verify,
+                )
         elif connection is None:
             session = boto3.session.Session(aws_access_key_id=self.access_key, aws_secret_access_key=self.secret_key, aws_session_token=self.security_token) 
             self._connections.connection = session.resource(
@@ -386,16 +403,29 @@ class S3Boto3Storage(BaseStorage):
         connection = getattr(self._connections, 'external_connection', None)
 
         if self.is_refreshable_session:
-            session = self.refreshable_session
+            try:
+                session = self.refreshable_session
 
-            self._connections.external_connection = session.resource(
-                's3',
-                region_name=self.region_name,
-                use_ssl=self.use_ssl,
-                endpoint_url=self.endpoint_external_url,
-                config=self.config,
-                verify=self.verify,
-            )
+                self._connections.external_connection = session.resource(
+                    's3',
+                    region_name=self.region_name,
+                    use_ssl=self.use_ssl,
+                    endpoint_url=self.endpoint_external_url,
+                    config=self.config,
+                    verify=self.verify,
+                )
+            except KeyError: 
+                # Handle threadsafe
+                session = self.refreshable_session_standalone
+
+                self._connections.external_connection = session.resource(
+                    's3',
+                    region_name=self.region_name,
+                    use_ssl=self.use_ssl,
+                    endpoint_url=self.endpoint_external_url,
+                    config=self.config,
+                    verify=self.verify,
+                )
         elif connection is None:
             session = boto3.session.Session(aws_access_key_id=self.access_key, aws_secret_access_key=self.secret_key, aws_session_token=self.security_token) 
             self._connections.external_connection = session.resource(
@@ -416,6 +446,7 @@ class S3Boto3Storage(BaseStorage):
         """
         if self._bucket is None:
             self._bucket = self.connection.Bucket(self.bucket_name)
+
         return self._bucket
 
     @property
@@ -426,6 +457,7 @@ class S3Boto3Storage(BaseStorage):
         """
         if self._external_bucket is None:
             self._external_bucket = self.external_connection.Bucket(self.bucket_name)
+            
         return self._external_bucket
 
     def _clean_name(self, name):
