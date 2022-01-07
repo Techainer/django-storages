@@ -289,6 +289,10 @@ class S3Boto3Storage(CompressStorageMixin, BaseStorage):
         return setting('AWS_S3_SECRET_ACCESS_KEY', setting('AWS_SECRET_ACCESS_KEY')) if not self.is_refreshable_session else self.refreshable_instance.secret_key
 
     @property
+    def security_token(self):
+        return setting('AWS_SESSION_TOKEN', setting('AWS_SECURITY_TOKEN')) if not self.is_refreshable_session else self.refreshable_instance.security_token
+
+    @property
     def public_access_key(self): 
         return setting('AWS_S3_PUBLIC_ACCESS_KEY_ID', setting('AWS_PUBLIC_ACCESS_KEY_ID')) 
 
@@ -297,8 +301,8 @@ class S3Boto3Storage(CompressStorageMixin, BaseStorage):
         return setting('AWS_S3_PUBLIC_SECRET_ACCESS_KEY', setting('AWS_PUBLIC_SECRET_ACCESS_KEY'))
 
     @property
-    def security_token(self):
-        return setting('AWS_SESSION_TOKEN', setting('AWS_SECURITY_TOKEN')) if not self.is_refreshable_session else self.refreshable_instance.security_token
+    def public_security_token(self):
+        return setting('AWS_SESSION_TOKEN', setting('AWS_SECURITY_TOKEN')) 
 
     @property
     def refreshable_session_standalone(self):
@@ -436,7 +440,7 @@ class S3Boto3Storage(CompressStorageMixin, BaseStorage):
         connection = getattr(self._connections, 'external_connection', None)
 
         if self.public_access_key and self.public_secret_key:
-            session = boto3.session.Session(aws_access_key_id=self.public_access_key, aws_secret_access_key=self.public_secret_key, aws_session_token=self.security_token) 
+            session = boto3.session.Session(aws_access_key_id=self.public_access_key, aws_secret_access_key=self.public_secret_key, aws_session_token=self.public_security_token) 
             self._connections.external_connection = session.resource(
                 's3',
                 region_name=self.region_name,
