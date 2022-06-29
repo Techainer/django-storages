@@ -138,6 +138,10 @@ The following settings are available:
 
     Default location for the uploaded files. This is a path that gets prepended to every file name.
 
+``AZURE_ENDPOINT_SUFFIX``
+
+    Defaults to ``core.windows.net``. Use ``core.chinacloudapi.cn`` for Azure.cn accounts.
+
 ``AZURE_CUSTOM_DOMAIN``
 
     The custom domain to use. This can be set in the Azure Portal. For
@@ -166,3 +170,7 @@ The following settings are available:
     basis, subclass the backend and override ``AzureStorage.get_object_parameters``.
     
     This is a Python ``dict`` and the possible parameters are: ``content_type``, ``content_encoding``, ``content_language``, ``content_disposition``, ``cache_control``, and ``content_md5``.
+
+``AZURE_API_VERSION``
+
+    The api version to use. The default value is ``None``.
