@@ -727,7 +727,7 @@ class S3Storage(CompressStorageMixin, BaseStorage):
 
         params["Bucket"] = self.bucket.name
         params["Key"] = name
-        url = self.bucket.meta.client.generate_presigned_url(
+        url = self.external_bucket.meta.client.generate_presigned_url(
             "get_object", Params=params, ExpiresIn=expire, HttpMethod=http_method
         )
         if self.querystring_auth:
