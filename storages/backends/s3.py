@@ -300,6 +300,7 @@ class S3Storage(CompressStorageMixin, BaseStorage):
         check_location(self)
 
         self._bucket = None
+        self._external_bucket = None
         self._connections = threading.local()
 
         if not self.config:
