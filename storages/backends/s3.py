@@ -732,10 +732,13 @@ class S3Storage(CompressStorageMixin, BaseStorage):
         url = self.external_bucket.meta.client.generate_presigned_url(
             "get_object", Params=params, ExpiresIn=expire, HttpMethod=http_method
         )
+
+        if self.endpoint_external_gateway_url is not None: 
+            return url.replace(self.endpoint_external_url, self.endpoint_external_gateway_url)
+
         if self.querystring_auth:
-            if self.endpoint_external_gateway_url is not None: 
-                return url.replace(self.endpoint_external_url, self.endpoint_external_gateway_url)
             return url
+        
         return self._strip_signing_parameters(url)
 
     def get_available_name(self, name, max_length=None):
