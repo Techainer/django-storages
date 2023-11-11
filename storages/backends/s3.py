@@ -408,6 +408,7 @@ class S3Storage(CompressStorageMixin, BaseStorage):
             "url_protocol": setting("AWS_S3_URL_PROTOCOL", "https:"),
             "endpoint_url": setting("AWS_S3_ENDPOINT_URL"),
             "endpoint_external_url": setting('AWS_S3_ENDPOINT_EXTERNAL_URL', setting('AWS_S3_ENDPOINT_URL')).strip("/") + "/",
+            "endpoint_external_gateway_url": setting('AWS_S3_ENDPOINT_EXTERNAL_GATEWAY_URL', None).strip("/") + "/" if setting('AWS_S3_ENDPOINT_EXTERNAL_GATEWAY_URL') else None,
             "proxies": setting("AWS_S3_PROXIES"),
             "region_name": setting("AWS_S3_REGION_NAME"),
             "use_ssl": setting("AWS_S3_USE_SSL", True),
@@ -732,6 +733,8 @@ class S3Storage(CompressStorageMixin, BaseStorage):
             "get_object", Params=params, ExpiresIn=expire, HttpMethod=http_method
         )
         if self.querystring_auth:
+            if self.endpoint_external_gateway_url is not None: 
+                return url.replace(self.endpoint_external_url, self.endpoint_external_gateway_url)
             return url
         return self._strip_signing_parameters(url)
 
