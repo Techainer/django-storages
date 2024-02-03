@@ -11,13 +11,20 @@ USER = "foo"
 PASSWORD = "b@r"
 HOST = "localhost"
 PORT = 2121
-URL = "ftp://{user}:{passwd}@{host}:{port}/".format(
-    user=USER, passwd=PASSWORD, host=HOST, port=PORT
-)
 
 LIST_FIXTURE = """drwxr-xr-x   2 ftp      nogroup      4096 Jul 27 09:46 dir
 -rw-r--r--   1 ftp      nogroup      1024 Jul 27 09:45 fi
 -rw-r--r--   1 ftp      nogroup      2048 Jul 27 09:50 fi2"""
+
+
+def geturl(scheme="ftp", pwd=PASSWORD):
+    return URL_TEMPLATE.format(
+        scheme=scheme, user=USER, passwd=pwd, host=HOST, port=PORT
+    )
+
+
+URL_TEMPLATE = "{scheme}://{user}:{passwd}@{host}:{port}/"
+URL = geturl()
 
 
 def list_retrlines(cmd, func):
@@ -48,6 +55,7 @@ class FTPTest(TestCase):
             "active": False,
             "path": "/",
             "port": 2121,
+            "secure": False,
         }
         self.assertEqual(config, wanted_config)
         # Test active FTP
@@ -59,6 +67,7 @@ class FTPTest(TestCase):
             "active": True,
             "path": "/",
             "port": 2121,
+            "secure": False,
         }
         self.assertEqual(config, wanted_config)
 
@@ -67,9 +76,9 @@ class FTPTest(TestCase):
             self.storage._decode_location("foo")
         with self.assertRaises(ImproperlyConfigured):
             self.storage._decode_location("http://foo.pt")
-        # TODO: Cannot not provide a port
-        # with self.assertRaises(ImproperlyConfigured):
-        #     self.storage._decode_location('ftp://')
+
+    def test_decode_location_urlchars_password(self):
+        self.storage._decode_location(geturl(pwd="b#r"))
 
     @patch("ftplib.FTP")
     def test_start_connection(self, mock_ftp):
@@ -239,3 +248,25 @@ class FTPStorageFileTest(TestCase):
         file_.is_dirty = True
         file_.read()
         file_.close()
+
+
+class FTPTLSTest(TestCase):
+    def setUp(self):
+        self.storage = ftp.FTPStorage(location=geturl(scheme="ftps"))
+
+    def test_decode_location(self):
+        wanted_config = {
+            "passwd": "b@r",
+            "host": "localhost",
+            "user": "foo",
+            "active": False,
+            "path": "/",
+            "port": 2121,
+            "secure": True,
+        }
+        self.assertEqual(self.storage._config, wanted_config)
+
+    @patch("ftplib.FTP_TLS")
+    def test_start_connection_calls_prot_p(self, mock_ftp):
+        self.storage._start_connection()
+        self.storage._connection.prot_p.assert_called_once()

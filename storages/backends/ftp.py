@@ -6,19 +6,20 @@
 # Usage:
 #
 # Add below to settings.py:
-# FTP_STORAGE_LOCATION = '[a]ftp://<user>:<pass>@<host>:<port>/[path]'
+# FTP_STORAGE_LOCATION = '[a]ftp[s]://<user>:<pass>@<host>:<port>/[path]'
 #
 # In models.py you can write:
 # from FTPStorage import FTPStorage
 # fs = FTPStorage()
+# For a TLS configuration, you must use 'ftps' protocol
 # class FTPTest(models.Model):
 #     file = models.FileField(upload_to='a/b/c/', storage=fs)
 
 import ftplib
 import io
 import os
-from urllib.parse import urljoin
-from urllib.parse import urlparse
+import re
+import urllib.parse
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -54,23 +55,28 @@ class FTPStorage(Storage):
 
     def _decode_location(self, location):
         """Return splitted configuration data from location."""
-        splitted_url = urlparse(location)
+        splitted_url = re.search(
+            r"^(?P<scheme>.+)://(?P<user>.+):(?P<passwd>.+)@"
+            r"(?P<host>.+):(?P<port>\d+)/(?P<path>.*)$",
+            location,
+        )
+
+        if splitted_url is None:
+            raise ImproperlyConfigured("Improperly formatted location URL")
+        if splitted_url["scheme"] not in ("ftp", "aftp", "ftps"):
+            raise ImproperlyConfigured("Only ftp, aftp, ftps schemes supported")
+        if splitted_url["host"] == "":
+            raise ImproperlyConfigured("You must at least provide host!")
+
         config = {}
+        config["active"] = splitted_url["scheme"] == "aftp"
+        config["secure"] = splitted_url["scheme"] == "ftps"
 
-        if splitted_url.scheme not in ("ftp", "aftp"):
-            raise ImproperlyConfigured("FTPStorage works only with FTP protocol!")
-        if splitted_url.hostname == "":
-            raise ImproperlyConfigured("You must at least provide hostname!")
-
-        if splitted_url.scheme == "aftp":
-            config["active"] = True
-        else:
-            config["active"] = False
-        config["path"] = splitted_url.path
-        config["host"] = splitted_url.hostname
-        config["user"] = splitted_url.username
-        config["passwd"] = splitted_url.password
-        config["port"] = int(splitted_url.port)
+        config["path"] = splitted_url["path"] or "/"
+        config["host"] = splitted_url["host"]
+        config["user"] = splitted_url["user"]
+        config["passwd"] = splitted_url["passwd"]
+        config["port"] = int(splitted_url["port"])
 
         return config
 
@@ -84,11 +90,13 @@ class FTPStorage(Storage):
 
         # Real reconnect
         if self._connection is None:
-            ftp = ftplib.FTP()
+            ftp = ftplib.FTP_TLS() if self._config["secure"] else ftplib.FTP()
             ftp.encoding = self.encoding
             try:
                 ftp.connect(self._config["host"], self._config["port"])
                 ftp.login(self._config["user"], self._config["passwd"])
+                if self._config["secure"]:
+                    ftp.prot_p()
                 if self._config["active"]:
                     ftp.set_pasv(False)
                 if self._config["path"] != "":
@@ -226,7 +234,7 @@ class FTPStorage(Storage):
     def url(self, name):
         if self._base_url is None:
             raise ValueError("This file is not accessible via a URL.")
-        return urljoin(self._base_url, name).replace("\\", "/")
+        return urllib.parse.urljoin(self._base_url, name).replace("\\", "/")
 
 
 class FTPStorageFile(File):

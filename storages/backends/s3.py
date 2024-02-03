@@ -27,6 +27,7 @@ from storages.utils import check_location
 from storages.utils import clean_name
 from storages.utils import get_available_overwrite_name
 from storages.utils import is_seekable
+from storages.utils import lookup_env
 from storages.utils import safe_join
 from storages.utils import setting
 from storages.utils import to_bytes
@@ -131,17 +132,32 @@ class S3File(CompressedFileMixin, File):
                 self._storage.get_object_parameters(self.name)
             )
             self.obj.load(**params)
-        self._is_dirty = False
-        self._raw_bytes_written = 0
+        self._closed = False
         self._file = None
-        self._multipart = None
         self._parts = None
         # 5 MB is the minimum part size (if there is more than one part).
         # Amazon allows up to 10,000 parts.  The default supports uploads
         # up to roughly 50 GB.  Increase the part size to accommodate
         # for files larger than this.
         self.buffer_size = buffer_size or setting("AWS_S3_FILE_BUFFER_SIZE", 5242880)
+        self._reset_file_properties()
+
+    def _reset_file_properties(self):
+        self._multipart = None
+        self._raw_bytes_written = 0
         self._write_counter = 0
+        self._is_dirty = False
+
+    def open(self, mode=None):
+        if self._file is not None and not self.closed:
+            self.seek(0)  # Mirror Django's behavior
+        elif mode and mode != self._mode:
+            raise ValueError("Cannot reopen file with a new mode.")
+
+        # Accessing the file will functionally re-open it
+        self.file  # noqa: B018
+
+        return self
 
     @property
     def size(self):
@@ -149,7 +165,7 @@ class S3File(CompressedFileMixin, File):
 
     @property
     def closed(self):
-        return not self._file or self._file.closed
+        return self._closed
 
     def _get_file(self):
         if self._file is None:
@@ -169,6 +185,7 @@ class S3File(CompressedFileMixin, File):
                 self._file.seek(0)
                 if self._storage.gzip and self.obj.content_encoding == "gzip":
                     self._file = self._decompress_file(mode=self._mode, file=self._file)
+            self._closed = False
         return self._file
 
     def _set_file(self, value):
@@ -264,6 +281,9 @@ class S3File(CompressedFileMixin, File):
             self._file.close()
             self._file = None
 
+        self._reset_file_properties()
+        self._closed = True
+
 
 @deconstructible
 class S3Storage(CompressStorageMixin, BaseStorage):
@@ -276,8 +296,8 @@ class S3Storage(CompressStorageMixin, BaseStorage):
     """
 
     default_content_type = "application/octet-stream"
-    # If config provided in init, signature_version and addressing_style settings/args
-    # are ignored.
+    # If config provided in subclass, signature_version and addressing_style
+    # settings/args are ignored.
     config = None
 
     # used for looking up the access and secret key from env vars
@@ -292,12 +312,20 @@ class S3Storage(CompressStorageMixin, BaseStorage):
         refreshable_session = None 
 
     def __init__(self, **settings):
-        cloudfront_key_id = settings.pop("cloudfront_key_id", None)
-        cloudfront_key = settings.pop("cloudfront_key", None)
+        omitted = object()
+        if not hasattr(self, "cloudfront_signer"):
+            self.cloudfront_signer = settings.pop("cloudfront_signer", omitted)
 
         super().__init__(**settings)
 
         check_location(self)
+
+        if (self.access_key or self.secret_key) and self.session_profile:
+            raise ImproperlyConfigured(
+                "AWS_S3_SESSION_PROFILE/session_profile should not be provided with "
+                "AWS_S3_ACCESS_KEY_ID/access_key and "
+                "AWS_S3_SECRET_ACCESS_KEY/secret_key"
+            )
 
         self._bucket = None
         self._external_bucket = None
@@ -321,10 +349,18 @@ class S3Storage(CompressStorageMixin, BaseStorage):
         if self.transfer_config is None:
             self.transfer_config = TransferConfig(use_threads=self.use_threads)
 
-        if cloudfront_key_id and cloudfront_key:
-            self.cloudfront_signer = self.get_cloudfront_signer(
-                cloudfront_key_id, cloudfront_key
-            )
+        if self.cloudfront_signer is omitted:
+            if self.cloudfront_key_id and self.cloudfront_key:
+                self.cloudfront_signer = self.get_cloudfront_signer(
+                    self.cloudfront_key_id, self.cloudfront_key
+                )
+            elif bool(self.cloudfront_key_id) ^ bool(self.cloudfront_key):
+                raise ImproperlyConfigured(
+                    "Both AWS_CLOUDFRONT_KEY_ID/cloudfront_key_id and "
+                    "AWS_CLOUDFRONT_KEY/cloudfront_key must be provided together."
+                )
+            else:
+                self.cloudfront_signer = None
 
     @property
     def access_key(self): 
@@ -354,35 +390,15 @@ class S3Storage(CompressStorageMixin, BaseStorage):
         return _cloud_front_signer_from_pem(key_id, key)
 
     def get_default_settings(self):
-        cloudfront_key_id = setting("AWS_CLOUDFRONT_KEY_ID")
-        cloudfront_key = setting("AWS_CLOUDFRONT_KEY")
-        if bool(cloudfront_key_id) ^ bool(cloudfront_key):
-            raise ImproperlyConfigured(
-                "Both AWS_CLOUDFRONT_KEY_ID and AWS_CLOUDFRONT_KEY must be "
-                "provided together."
-            )
-
-        if cloudfront_key_id:
-            cloudfront_signer = self.get_cloudfront_signer(
-                cloudfront_key_id, cloudfront_key
-            )
-        else:
-            cloudfront_signer = None
-
-        s3_access_key_id = setting("AWS_S3_ACCESS_KEY_ID")
-        s3_secret_access_key = setting("AWS_S3_SECRET_ACCESS_KEY")
-        s3_session_profile = setting("AWS_S3_SESSION_PROFILE")
-        if (s3_access_key_id or s3_secret_access_key) and s3_session_profile:
-            raise ImproperlyConfigured(
-                "AWS_S3_SESSION_PROFILE should not be provided with "
-                "AWS_S3_ACCESS_KEY_ID and AWS_S3_SECRET_ACCESS_KEY"
-            )
-
         return {
             "access_key": self.access_key,
             "secret_key": self.secret_key,
-            "security_token": self.security_token,
-            "session_profile": setting("AWS_S3_SESSION_PROFILE"),
+            "security_token": setting(
+                "AWS_SESSION_TOKEN", setting("AWS_SECURITY_TOKEN")
+            ),
+            "session_profile": setting(
+                "AWS_S3_SESSION_PROFILE", lookup_env(["AWS_S3_SESSION_PROFILE"])
+            ),
             "file_overwrite": setting("AWS_S3_FILE_OVERWRITE", True),
             "object_parameters": setting("AWS_S3_OBJECT_PARAMETERS", {}),
             "bucket_name": setting("AWS_STORAGE_BUCKET_NAME"),
@@ -391,7 +407,8 @@ class S3Storage(CompressStorageMixin, BaseStorage):
             "signature_version": setting("AWS_S3_SIGNATURE_VERSION"),
             "location": setting("AWS_LOCATION", ""),
             "custom_domain": setting("AWS_S3_CUSTOM_DOMAIN"),
-            "cloudfront_signer": cloudfront_signer,
+            "cloudfront_key_id": setting("AWS_CLOUDFRONT_KEY_ID"),
+            "cloudfront_key": setting("AWS_CLOUDFRONT_KEY"),
             "addressing_style": setting("AWS_S3_ADDRESSING_STYLE"),
             "file_name_charset": setting("AWS_S3_FILE_NAME_CHARSET", "utf-8"),
             "gzip": setting("AWS_IS_GZIPPED", False),
@@ -630,7 +647,12 @@ class S3Storage(CompressStorageMixin, BaseStorage):
 
     def size(self, name):
         name = self._normalize_name(clean_name(name))
-        return self.bucket.Object(name).content_length
+        try:
+            return self.bucket.Object(name).content_length
+        except ClientError as err:
+            if err.response["ResponseMetadata"]["HTTPStatusCode"] == 404:
+                raise FileNotFoundError("File does not exist: %s" % name)
+            raise  # Let it bubble up if it was some other error
 
     def _get_write_parameters(self, name, content=None):
         params = self.get_object_parameters(name)

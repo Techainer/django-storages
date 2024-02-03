@@ -1,6 +1,44 @@
 django-storages CHANGELOG
 =========================
 
+1.14.2 (2023-10-08)
+*******************
+
+S3
+--
+
+- Fix re-opening of ``S3File`` (`#1321`_)
+- Revert raising ``ImproperlyConfigured`` when no ``bucket_name`` is set (`#1322`_)
+
+.. _#1321: https://github.com/jschneier/django-storages/pull/1321
+.. _#1322: https://github.com/jschneier/django-storages/pull/1322
+
+1.14.1 (2023-09-29)
+*******************
+
+Azure
+-----
+
+- Do not require both ``AccountName`` and ``AccountKey`` in ``connection_string`` (`#1312`_)
+
+S3
+--
+
+- Work around boto3 closing the uploaded file (`#1303`_)
+- Fix crash when cleaning up during aborted connection of ``S3File.write`` (`#1304`_)
+- Raise ``FileNotFoundError`` when attempting to read the ``size`` of a non-existent file (`#1309`_)
+- Move auth & CloudFront signer validation to init (`#1302`_)
+- Raise ``ImproperlyConfigured`` if no ``bucket_name`` is set (`#1313`_)
+- Fix tracking of ``S3File.closed`` (`#1311`_)
+
+.. _#1303: https://github.com/jschneier/django-storages/pull/1303
+.. _#1304: https://github.com/jschneier/django-storages/pull/1304
+.. _#1309: https://github.com/jschneier/django-storages/pull/1309
+.. _#1302: https://github.com/jschneier/django-storages/pull/1302
+.. _#1313: https://github.com/jschneier/django-storages/pull/1313
+.. _#1312: https://github.com/jschneier/django-storages/pull/1312
+.. _#1311: https://github.com/jschneier/django-storages/pull/1311
+
 1.14 (2023-09-04)
 *******************
 
