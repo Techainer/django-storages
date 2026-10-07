@@ -1,3 +1,4 @@
+import os
 from uuid import uuid4
 from datetime import datetime
 from time import time
@@ -44,7 +45,15 @@ class InstanceMetadataBotoSession:
 
         # read why RoleSessionName is important https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/sts.html
         self.session_name = session_name or uuid4().hex
-        self._role_fetcher = InstanceMetadataFetcher(timeout=setting("S3_CREDENTIALS_TIMEOUT", 1000), num_attempts=3)
+        # The timeout is in seconds; the old default of 1000 hung start-up for
+        # most of an hour wherever instance metadata is unreachable. The
+        # endpoint honours AWS_EC2_METADATA_SERVICE_ENDPOINT as botocore does.
+        endpoint = os.environ.get("AWS_EC2_METADATA_SERVICE_ENDPOINT")
+        self._role_fetcher = InstanceMetadataFetcher(
+            timeout=setting("S3_CREDENTIALS_TIMEOUT", 2),
+            num_attempts=3,
+            config={"ec2_metadata_service_endpoint": endpoint} if endpoint else None,
+        )
 
         self.access_key = None 
         self.secret_key = None 

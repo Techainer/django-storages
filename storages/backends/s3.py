@@ -451,67 +451,96 @@ class S3Storage(CompressStorageMixin, BaseStorage):
     def connection(self):
         connection = getattr(self._connections, "connection", None)
         if connection is None:
-            session = self._create_session()
-            self._connections.connection = session.resource(
-                "s3",
-                region_name=self.region_name,
-                use_ssl=self.use_ssl,
-                endpoint_url=self.endpoint_url,
-                config=self.config,
-                verify=self.verify,
-            )
+            if self.is_refreshable_session:
+                # Instance-metadata credentials rotate every few hours. The
+                # access_key/secret_key/security_token properties are a
+                # start-up snapshot, so uploads would fail with ExpiredToken
+                # once they rotate; build from the refreshable session instead.
+                self._connections.connection = self._refreshable_resource(
+                    endpoint_url=self.endpoint_url
+                )
+            else:
+                session = self._create_session()
+                self._connections.connection = session.resource(
+                    "s3",
+                    region_name=self.region_name,
+                    use_ssl=self.use_ssl,
+                    endpoint_url=self.endpoint_url,
+                    config=self.config,
+                    verify=self.verify,
+                )
         return self._connections.connection
+
+    def _refreshable_resource(self, endpoint_url, config=None, kind="resource"):
+        kwargs = dict(
+            region_name=self.region_name,
+            use_ssl=self.use_ssl,
+            endpoint_url=endpoint_url,
+            config=config or self.config,
+            verify=self.verify,
+        )
+        try:
+            return getattr(self.refreshable_session, kind)("s3", **kwargs)
+        except KeyError:
+            # boto3 sessions are not thread-safe; a concurrent first use from
+            # another thread can raise KeyError, so fall back to a fresh one.
+            return getattr(self.refreshable_session_standalone, kind)("s3", **kwargs)
+
+    def _external_session(self):
+        if self.public_access_key and self.public_secret_key:
+            return boto3.session.Session(
+                aws_access_key_id=self.public_access_key,
+                aws_secret_access_key=self.public_secret_key,
+                aws_session_token=self.security_token,
+            )
+        return boto3.session.Session(
+            aws_access_key_id=self.access_key,
+            aws_secret_access_key=self.secret_key,
+            aws_session_token=self.security_token,
+        )
+
+    def _external(self, kind, config):
+        if self.is_refreshable_session and not (
+            self.public_access_key and self.public_secret_key
+        ):
+            return self._refreshable_resource(
+                endpoint_url=self.endpoint_external_url, config=config, kind=kind
+            )
+        return getattr(self._external_session(), kind)(
+            "s3",
+            region_name=self.region_name,
+            use_ssl=self.use_ssl,
+            endpoint_url=self.endpoint_external_url,
+            config=config,
+            verify=self.verify,
+        )
 
     @property
     def external_connection(self):
-        connection = getattr(self._connections, 'external_connection', None)
+        # Cached per thread like `connection`; building a boto3 session on
+        # every url() call was the bulk of its cost when public keys are set.
+        connection = getattr(self._connections, "external_connection", None)
+        if connection is None:
+            connection = self._external("resource", self.config)
+            self._connections.external_connection = connection
+        return connection
 
-        if self.public_access_key and self.public_secret_key:
-            session = boto3.session.Session(aws_access_key_id=self.public_access_key, aws_secret_access_key=self.public_secret_key, aws_session_token=self.security_token) 
-            self._connections.external_connection = session.resource(
-                's3',
-                region_name=self.region_name,
-                use_ssl=self.use_ssl,
-                endpoint_url=self.endpoint_external_url,
-                config=self.config,
-                verify=self.verify,
+    @property
+    def external_gateway_client(self):
+        """
+        A gateway proxies the external endpoint by path, so URLs it serves must
+        be signed path-style. A virtual-hosted URL keeps the bucket in the host
+        name, never starts with endpoint_external_url, and so was returned
+        without the gateway at all.
+        """
+        client = getattr(self._connections, "external_gateway_client", None)
+        if client is None:
+            client = self._external(
+                "client", self.config.merge(Config(s3={"addressing_style": "path"}))
             )
-        elif self.is_refreshable_session:
-            try:
-                session = self.refreshable_session
+            self._connections.external_gateway_client = client
+        return client
 
-                self._connections.external_connection = session.resource(
-                    's3',
-                    region_name=self.region_name,
-                    use_ssl=self.use_ssl,
-                    endpoint_url=self.endpoint_external_url,
-                    config=self.config,
-                    verify=self.verify,
-                )
-            except KeyError: 
-                # Handle threadsafe
-                session = self.refreshable_session_standalone
-
-                self._connections.external_connection = session.resource(
-                    's3',
-                    region_name=self.region_name,
-                    use_ssl=self.use_ssl,
-                    endpoint_url=self.endpoint_external_url,
-                    config=self.config,
-                    verify=self.verify,
-                )
-        elif connection is None:
-            session = boto3.session.Session(aws_access_key_id=self.access_key, aws_secret_access_key=self.secret_key, aws_session_token=self.security_token) 
-            self._connections.external_connection = session.resource(
-                's3',
-                region_name=self.region_name,
-                use_ssl=self.use_ssl,
-                endpoint_url=self.endpoint_external_url,
-                config=self.config,
-                verify=self.verify,
-            )
-        return self._connections.external_connection
-    
     def _create_session(self):
         """
         If a user specifies a profile name and this class obtains access keys
@@ -751,12 +780,16 @@ class S3Storage(CompressStorageMixin, BaseStorage):
 
         params["Bucket"] = self.bucket.name
         params["Key"] = name
+
+        if self.endpoint_external_gateway_url is not None:
+            url = self.external_gateway_client.generate_presigned_url(
+                "get_object", Params=params, ExpiresIn=expire, HttpMethod=http_method
+            )
+            return url.replace(self.endpoint_external_url, self.endpoint_external_gateway_url)
+
         url = self.external_bucket.meta.client.generate_presigned_url(
             "get_object", Params=params, ExpiresIn=expire, HttpMethod=http_method
         )
-
-        if self.endpoint_external_gateway_url is not None: 
-            return url.replace(self.endpoint_external_url, self.endpoint_external_gateway_url)
 
         if self.querystring_auth:
             return url
