@@ -7,7 +7,9 @@ import threading
 import warnings
 from datetime import datetime
 from datetime import timedelta
+from urllib.parse import parse_qsl
 from urllib.parse import urlencode
+from urllib.parse import urlsplit
 
 from django.contrib.staticfiles.storage import ManifestFilesMixin
 from django.core.exceptions import ImproperlyConfigured
