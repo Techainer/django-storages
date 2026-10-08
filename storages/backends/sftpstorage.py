@@ -4,6 +4,7 @@
 #
 # Modeled on the FTP storage by Rafal Jonca <jonca.rafal@gmail.com>
 
+import datetime
 import getpass
 import io
 import os
@@ -25,16 +26,6 @@ from storages.utils import setting
 class SFTPStorage(ClosingContextManager, BaseStorage):
     def __init__(self, **settings):
         super().__init__(**settings)
-        self._host = self.host
-        self._params = self.params
-        self._interactive = self.interactive
-        self._file_mode = self.file_mode
-        self._dir_mode = self.dir_mode
-        self._uid = self.uid
-        self._gid = self.gid
-        self._known_host_file = self.known_host_file
-        self._root_path = self.root_path
-        self._base_url = self.base_url
         self._ssh = None
         self._sftp = None
 
@@ -49,13 +40,13 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
             "gid": setting("SFTP_STORAGE_GID"),
             "known_host_file": setting("SFTP_KNOWN_HOST_FILE"),
             "root_path": setting("SFTP_STORAGE_ROOT", ""),
-            "base_url": setting("MEDIA_URL"),
+            "base_url": setting("SFTP_BASE_URL") or setting("MEDIA_URL"),
         }
 
     def _connect(self):
         self._ssh = paramiko.SSHClient()
 
-        known_host_file = self._known_host_file or os.path.expanduser(
+        known_host_file = self.known_host_file or os.path.expanduser(
             os.path.join("~", ".ssh", "known_hosts")
         )
 
@@ -66,15 +57,15 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
         self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         try:
-            self._ssh.connect(self._host, **self._params)
+            self._ssh.connect(self.host, **self.params)
         except paramiko.AuthenticationException as e:
-            if self._interactive and "password" not in self._params:
+            if self.interactive and "password" not in self.params:
                 # If authentication has failed, and we haven't already tried
                 # username/password, and configuration allows it, then try
                 # again with username/password.
-                if "username" not in self._params:
-                    self._params["username"] = getpass.getuser()
-                self._params["password"] = getpass.getpass()
+                if "username" not in self.params:
+                    self.params["username"] = getpass.getuser()
+                self.params["password"] = getpass.getpass()
                 self._connect()
             else:
                 raise paramiko.AuthenticationException(e)
@@ -95,7 +86,7 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
         return self._sftp
 
     def _remote_path(self, name):
-        return posixpath.join(self._root_path, name)
+        return posixpath.join(self.root_path, name)
 
     def _open(self, name, mode="rb"):
         return SFTPStorageFile(name, self, mode)
@@ -118,15 +109,15 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
         """Create directory, recursing up to create parent dirs if
         necessary."""
         parent = posixpath.dirname(path)
-        if not self.exists(parent):
+        if not self._path_exists(parent):
             self._mkdir(parent)
         self.sftp.mkdir(path)
 
-        if self._dir_mode is not None:
-            self.sftp.chmod(path, self._dir_mode)
+        if self.dir_mode is not None:
+            self.sftp.chmod(path, self.dir_mode)
 
-        if self._uid or self._gid:
-            self._chown(path, uid=self._uid, gid=self._gid)
+        if self.uid or self.gid:
+            self._chown(path, uid=self.uid, gid=self.gid)
 
     def _save(self, name, content):
         """Save file via SFTP."""
@@ -134,16 +125,16 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
             content.seek(0, os.SEEK_SET)
         path = self._remote_path(name)
         dirname = posixpath.dirname(path)
-        if not self.exists(dirname):
+        if not self._path_exists(dirname):
             self._mkdir(dirname)
 
         self.sftp.putfo(content, path)
 
         # set file permissions if configured
-        if self._file_mode is not None:
-            self.sftp.chmod(path, self._file_mode)
-        if self._uid or self._gid:
-            self._chown(path, uid=self._uid, gid=self._gid)
+        if self.file_mode is not None:
+            self.sftp.chmod(path, self.file_mode)
+        if self.uid or self.gid:
+            self._chown(path, uid=self.uid, gid=self.gid)
         return name
 
     def delete(self, name):
@@ -152,12 +143,22 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
         except OSError:
             pass
 
-    def exists(self, name):
+    def _path_exists(self, path):
+        """Determines whether a file existis in the sftp storage given its
+        absolute path."""
         try:
-            self.sftp.stat(self._remote_path(name))
+            self.sftp.stat(path)
             return True
         except FileNotFoundError:
             return False
+
+    def exists(self, name):
+        """Determines whether a file exists within the root folder of the SFTP storage
+        (as set by `SFTP_STORAGE_ROOT`). This method differs from `._path_exists()`
+        in that the provided `name` is assumed to be the relative path of the file
+        within the root folder.
+        """
+        return self._path_exists(self._remote_path(name))
 
     def _isdir_attr(self, item):
         # Return whether an item in sftp.listdir_attr results is a directory
@@ -180,10 +181,25 @@ class SFTPStorage(ClosingContextManager, BaseStorage):
         remote_path = self._remote_path(name)
         return self.sftp.stat(remote_path).st_size
 
+    # From Django
+    def _datetime_from_timestamp(self, ts):
+        tz = datetime.timezone.utc if setting("USE_TZ") else None
+        return datetime.datetime.fromtimestamp(ts, tz=tz)
+
+    def get_accessed_time(self, name):
+        remote_path = self._remote_path(name)
+        utime = self.sftp.stat(remote_path).st_atime
+        return self._datetime_from_timestamp(utime)
+
+    def get_modified_time(self, name):
+        remote_path = self._remote_path(name)
+        utime = self.sftp.stat(remote_path).st_mtime
+        return self._datetime_from_timestamp(utime)
+
     def url(self, name):
-        if self._base_url is None:
+        if self.base_url is None:
             raise ValueError("This file is not accessible via a URL.")
-        return urljoin(self._base_url, name).replace("\\", "/")
+        return urljoin(self.base_url, name).replace("\\", "/")
 
 
 class SFTPStorageFile(File):

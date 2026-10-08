@@ -33,12 +33,6 @@ class DropboxStorageException(Exception):
 DropBoxStorageException = DropboxStorageException
 
 
-def removeprefix(prefix, name):
-    if name.startswith(prefix):
-        name = name[len(prefix) :]
-    return name
-
-
 class DropboxFile(File):
     def __init__(self, name, storage):
         self.name = name
@@ -55,7 +49,7 @@ class DropboxFile(File):
                 with BytesIO(response.content) as file_content:
                     copyfileobj(file_content, self._file)
             else:
-                # JIC the exception isn't catched by the dropbox client
+                # JIC the exception isn't caught by the dropbox client
                 raise DropboxStorageException(
                     "Dropbox server returned a {} response when accessing {}".format(
                         response.status_code, self.name
@@ -80,7 +74,9 @@ class DropboxStorage(BaseStorage):
     CHUNK_SIZE = 4 * 1024 * 1024
 
     def __init__(self, oauth2_access_token=None, **settings):
-        super().__init__(oauth2_access_token=oauth2_access_token, **settings)
+        if oauth2_access_token is not None:
+            settings["oauth2_access_token"] = oauth2_access_token
+        super().__init__(**settings)
 
         if self.oauth2_access_token is None and not all(
             [self.app_key, self.app_secret, self.oauth2_refresh_token]
@@ -174,10 +170,7 @@ class DropboxStorage(BaseStorage):
         else:
             self._chunked_upload(content, self._full_path(name))
         content.close()
-        # .save() validates the filename isn't absolute but Dropbox requires an
-        # absolute filename.  Work with the absolute name internally but strip it
-        # off before passing up-the-chain.
-        return removeprefix(self.root_path, name).lstrip("/")
+        return name
 
     def _chunked_upload(self, content, dest_path):
         upload_session = self.client.files_upload_session_start(
@@ -201,7 +194,6 @@ class DropboxStorage(BaseStorage):
 
     def get_available_name(self, name, max_length=None):
         """Overwrite existing file with the same name."""
-        name = self._full_path(name)
         if self.write_mode == "overwrite":
             return get_available_overwrite_name(name, max_length)
         return super().get_available_name(name, max_length)

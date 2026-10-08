@@ -46,10 +46,54 @@ Authentication Settings
 
 Several different methods of authentication are provided. In order of precedence they are:
 
-#. ``connection_string`` or ``AZURE_CONNECTION_STRING`` (see `Connection string docs <http://azure.microsoft.com/en-us/documentation/articles/storage-configure-connection-string/>`_)
+#. ``connection_string`` or ``AZURE_CONNECTION_STRING`` (see `Connection string docs <https://learn.microsoft.com/en-us/azure/storage/common/storage-configure-connection-string>`_)
 #. (``account_key`` or ``AZURE_ACCOUNT_KEY``) and (``account_name`` or ``AZURE_ACCOUNT_NAME``)
-#. ``token_credential`` or ``AZURE_TOKEN_CREDENTIAL``
+#. ``token_credential`` or ``AZURE_TOKEN_CREDENTIAL`` with ``account_name`` or ``AZURE_ACCOUNT_NAME``
 #. ``sas_token`` or ``AZURE_SAS_TOKEN``
+
+Using Managed Identity
+++++++++++++++++++++++
+
+`Azure Managed Identity <https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/overview>`_ is an authentication method that allows you to authenticate to Azure services without storing credentials in your code.
+Managed Identity is the recommended mechanism for password-less authentication to Azure Storage Accounts from other Azure services like App Services, Functions, Container Apps, and VMs.
+
+To use Managed Identity you will need to configure a System Assigned Managed Identity or a User Assigned Managed Identity for your app service. Then you can use the `DefaultAzureCredential <https://learn.microsoft.com/python/api/overview/azure/identity-readme?view=azure-python#defaultazurecredential>`_ class from the Azure SDK to authenticate. 
+This class will automatically try all the available authentication methods in the order of precedence. ``DefaultAzureCredential`` will also use environment variables for local development, or VS Code Azure Login if available.
+
+This `guide <https://learn.microsoft.com/azure/storage/blobs/storage-quickstart-blobs-python?tabs=managed-identity%2Croles-azure-portal%2Csign-in-azure-cli&pivots=blob-storage-quickstart-scratch#authenticate-to-azure-and-authorize-access-to-blob-data>`_ contains more information on assigning roles to Storage Accounts.
+
+Before using Managed Identity, you will need to install the Azure Identity package::
+
+  pip install azure-identity
+
+After creating the containers in the Azure Storage Account, you can configure Managed Identity in Django settings. 
+Import ``DefaultAzureCredential`` from ``azure.identity`` to use it for the ``token_credential`` property::
+
+
+  from azure.identity import DefaultAzureCredential
+
+  ...
+
+  STORAGES = {
+      "default": {
+          "BACKEND": "storages.backends.azure_storage.AzureStorage",
+          "OPTIONS": {
+              "token_credential": DefaultAzureCredential(),
+              "account_name": "mystorageaccountname",
+              "azure_container": "media",
+          },
+      },
+      "staticfiles": {
+          "BACKEND": "storages.backends.azure_storage.AzureStorage",
+          "OPTIONS": {
+              "token_credential": DefaultAzureCredential(),
+              "account_name": "mystorageaccountname",
+              "azure_container": "static",
+          },
+      },
+  }
+
+For `User assigned Managed Identity <https://learn.microsoft.com/python/api/overview/azure/identity-readme?view=azure-python#specify-a-user-assigned-managed-identity-for-defaultazurecredential>`_, pass the client ID parameter to the DefaultAzureCredential call.
 
 Settings
 ~~~~~~~~
@@ -79,7 +123,7 @@ Settings
 
   Global connection timeout in seconds.
 
-``max_memory`` size ``AZURE_BLOB_MAX_MEMORY_SIZE``
+``max_memory_size`` or ``AZURE_BLOB_MAX_MEMORY_SIZE``
 
   Default: ``2*1024*1024`` i.e ``2MB``
 
@@ -141,12 +185,52 @@ Settings
 
   This is a Python ``dict`` and the possible parameters are: ``content_type``, ``content_encoding``, ``content_language``, ``content_disposition``, ``cache_control``, and ``content_md5``.
 
+``client_options`` or ``AZURE_CLIENT_OPTIONS``
+
+  Default: ``{}``
+
+  A dict of kwarg options to send to the ``BlobServiceClient``. A partial list of options can be found
+  `in the client docs <https://learn.microsoft.com/en-us/python/api/azure-storage-blob/azure.storage.blob.blobserviceclient?view=azure-python#keyword-only-parameters>`__.
+
+  Additionally, this setting can be used to configure the client retry settings. To see how follow the
+  `Python retry docs <https://learn.microsoft.com/en-us/azure/storage/blobs/storage-retry-policy-python>`__.
+
 ``api_version`` or ``AZURE_API_VERSION``
 
   Default: ``None``
 
-  The api version to use.
+  **Note: This option is deprecated. Use client_options/AZURE_CLIENT_OPTIONS instead.**
 
+  The Azure Storage API version to use. Default value is the most recent service version that is compatible with the current SDK.
+  Setting to an older version may result in reduced feature compatibility.
+
+Using with Azurite (previously Azure Storage Emulator)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Azurite is a local emulator for Azure Storage accounts that emulates the API for Azure Blob storage and enables local testing and development without an Azure account, free of charge.
+
+To use the Azure Storage Emulator, you download and install it from the `Azurite page <https://learn.microsoft.com/azure/storage/common/storage-use-azurite>`_.
+
+Copy the default `connection string <https://learn.microsoft.com/azure/storage/common/storage-use-azurite?tabs=visual-studio-code%2Cblob-storage#http-connection-strings>`_ and set it in your settings::
+
+  STORAGES = {
+      "default": {
+          "BACKEND": "storages.backends.azure_storage.AzureStorage",
+          "OPTIONS": {
+              "connection_string": "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;",
+              "azure_container": "media",
+          },
+      },
+      "staticfiles": {
+          "BACKEND": "storages.backends.azure_storage.AzureStorage",
+          "OPTIONS": {
+              "connection_string": "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;",
+              "azure_container": "static",
+          },
+      },
+  }
+
+Django Storages will not create containers if they don't exist, so you will need to create any storage containers using the Azurite CLI or the Azure Storage Explorer.
 
 Additional Notes
 ----------------
@@ -167,7 +251,7 @@ The difference between public and private URLs is that private includes the SAS 
 With private URLs you can override certain properties stored for the blob by specifying
 query parameters as part of the shared access signature. These properties include the
 cache-control, content-type, content-encoding, content-language, and content-disposition.
-See https://docs.microsoft.com/en-us/rest/api/storageservices/set-blob-properties#remarks
+See https://docs.microsoft.com/rest/api/storageservices/set-blob-properties#remarks
 
 You can specify these parameters by::
 

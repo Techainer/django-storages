@@ -14,6 +14,7 @@ from google.cloud.storage.blob import Blob
 from google.cloud.storage.retry import DEFAULT_RETRY
 
 from storages.backends import gcloud
+from storages.backends.gcloud import GoogleCloudFile
 
 
 class GCloudTestCase(TestCase):
@@ -21,40 +22,42 @@ class GCloudTestCase(TestCase):
         self.bucket_name = "test_bucket"
         self.filename = "test_file.txt"
         self.storage = gcloud.GoogleCloudStorage(bucket_name=self.bucket_name)
-
-
-class GCloudStorageTests(GCloudTestCase):
-    def setUp(self):
-        super().setUp()
         self.client_patcher = mock.patch("storages.backends.gcloud.Client")
         self.client_patcher.start()
 
     def tearDown(self):
+        super().tearDown()
         self.client_patcher.stop()
 
+
+class GCloudStorageTests(GCloudTestCase):
     def test_open_read(self):
         """
         Test opening a file and reading from it
         """
         data = b"This is some test read data."
 
-        f = self.storage.open(self.filename)
-        self.storage._client.bucket.assert_called_with(self.bucket_name)
-        self.storage._bucket.get_blob.assert_called_with(self.filename, chunk_size=None)
+        with self.storage.open(self.filename) as f:
+            self.storage._client.bucket.assert_called_with(self.bucket_name)
+            self.storage._bucket.get_blob.assert_called_with(
+                self.filename, chunk_size=None
+            )
 
-        f.blob.download_to_file = lambda tmpfile: tmpfile.write(data)
-        self.assertEqual(f.read(), data)
+            f.blob.download_to_file = lambda tmpfile, **kwargs: tmpfile.write(data)
+            self.assertEqual(f.read(), data)
 
     def test_open_read_num_bytes(self):
         data = b"This is some test read data."
         num_bytes = 10
 
-        f = self.storage.open(self.filename)
-        self.storage._client.bucket.assert_called_with(self.bucket_name)
-        self.storage._bucket.get_blob.assert_called_with(self.filename, chunk_size=None)
+        with self.storage.open(self.filename) as f:
+            self.storage._client.bucket.assert_called_with(self.bucket_name)
+            self.storage._bucket.get_blob.assert_called_with(
+                self.filename, chunk_size=None
+            )
 
-        f.blob.download_to_file = lambda tmpfile: tmpfile.write(data)
-        self.assertEqual(f.read(num_bytes), data[0:num_bytes])
+            f.blob.download_to_file = lambda tmpfile, **kwargs: tmpfile.write(data)
+            self.assertEqual(f.read(num_bytes), data[0:num_bytes])
 
     def test_open_read_nonexistent(self):
         self.storage._bucket = mock.MagicMock()
@@ -359,7 +362,7 @@ class GCloudStorageTests(GCloudTestCase):
             expiration=timedelta(seconds=3600), version="v4"
         )
 
-    def test_custom_endpoint(self):
+    def test_custom_endpoint_with_parameters(self):
         self.storage.custom_endpoint = "https://example.com"
 
         self.storage.default_acl = "publicRead"
@@ -375,11 +378,13 @@ class GCloudStorageTests(GCloudTestCase):
         type(blob.bucket).name = mock.PropertyMock(return_value=bucket_name)
         blob.generate_signed_url = generate_signed_url
         self.storage._bucket.blob.return_value = blob
-        self.storage.url(self.filename)
+        parameters = {"version": "v2", "method": "POST"}
+        self.storage.url(self.filename, parameters=parameters)
         blob.generate_signed_url.assert_called_with(
             bucket_bound_hostname=self.storage.custom_endpoint,
             expiration=timedelta(seconds=86400),
-            version="v4",
+            method="POST",
+            version="v2",
         )
 
     def test_get_available_name(self):
@@ -500,6 +505,79 @@ class GCloudStorageTests(GCloudTestCase):
                 self.filename, chunk_size=chunk_size
             )
 
+    def test_iam_sign_blob_setting(self):
+        self.assertEqual(self.storage.iam_sign_blob, False)
+        with override_settings(GS_IAM_SIGN_BLOB=True):
+            storage = gcloud.GoogleCloudStorage()
+            self.assertEqual(storage.iam_sign_blob, True)
+
+    def test_sa_email_setting(self):
+        self.assertEqual(self.storage.sa_email, None)
+        with override_settings(GS_SA_EMAIL="service_account_email@gmail.com"):
+            storage = gcloud.GoogleCloudStorage()
+            self.assertEqual(storage.sa_email, "service_account_email@gmail.com")
+
+    def test_iam_sign_blob_no_service_account_email_raises_attribute_error(self):
+        with override_settings(GS_IAM_SIGN_BLOB=True):
+            storage = gcloud.GoogleCloudStorage()
+            storage._bucket = mock.MagicMock()
+            storage.credentials = mock.MagicMock()
+            # deleting mocked attribute to simulate no service_account_email
+            del storage.credentials.service_account_email
+            # simulating access token
+            storage.credentials.token = "1234"
+            # no sa_email or adc service_account_email found
+            with self.assertRaises(
+                AttributeError,
+                msg=(
+                    "Sign Blob API requires service_account_email to be available "
+                    "through ADC or setting `sa_email`"
+                ),
+            ):
+                storage.url(self.filename)
+
+    def test_iam_sign_blob_with_adc_service_account_email(self):
+        with override_settings(GS_IAM_SIGN_BLOB=True):
+            storage = gcloud.GoogleCloudStorage()
+            storage._bucket = mock.MagicMock()
+            storage.credentials = mock.MagicMock()
+            # simulating adc service account email
+            storage.credentials.service_account_email = "service@gmail.com"
+            # simulating access token
+            storage.credentials.token = "1234"
+            blob = mock.MagicMock()
+            storage._bucket.blob.return_value = blob
+            storage.url(self.filename)
+            # called with adc service account email and access token
+            blob.generate_signed_url.assert_called_with(
+                expiration=timedelta(seconds=86400),
+                version="v4",
+                service_account_email=storage.credentials.service_account_email,
+                access_token=storage.credentials.token,
+            )
+
+    def test_iam_sign_blob_with_sa_email_setting(self):
+        with override_settings(
+            GS_IAM_SIGN_BLOB=True, GS_SA_EMAIL="service_account_email@gmail.com"
+        ):
+            storage = gcloud.GoogleCloudStorage()
+            storage._bucket = mock.MagicMock()
+            storage.credentials = mock.MagicMock()
+            # simulating adc service account email
+            storage.credentials.service_account_email = "service@gmail.com"
+            # simulating access token
+            storage.credentials.token = "1234"
+            blob = mock.MagicMock()
+            storage._bucket.blob.return_value = blob
+            storage.url(self.filename)
+            # called with sa_email as it has final say
+            blob.generate_signed_url.assert_called_with(
+                expiration=timedelta(seconds=86400),
+                version="v4",
+                service_account_email=storage.sa_email,
+                access_token=storage.credentials.token,
+            )
+
 
 class GoogleCloudGzipClientTests(GCloudTestCase):
     def setUp(self):
@@ -507,12 +585,11 @@ class GoogleCloudGzipClientTests(GCloudTestCase):
         self.storage.gzip = True
 
     @mock.patch("google.cloud.storage.blob.Blob._do_upload")
-    @mock.patch("google.auth.default", return_value=["foo", None])
     def test_storage_save_gzipped(self, *args):
         """
         Test saving a gzipped file
         """
-        name = "test_storage_save.js.gz"
+        name = "test_storage_save.css.gz"
         content = ContentFile("I am gzip'd", name=name)
 
         blob = Blob("x", None)
@@ -521,24 +598,23 @@ class GoogleCloudGzipClientTests(GCloudTestCase):
         try:
             patcher.start()
             self.storage.save(name, content)
-            blob.upload_from_file.assert_called_with(
+            obj = self.storage._bucket.get_blob()
+            obj.upload_from_file.assert_called_with(
                 mock.ANY,
                 rewind=True,
                 retry=DEFAULT_RETRY,
-                size=None,
+                size=11,
                 predefined_acl=None,
-                content_type="application/javascript",
+                content_type="text/css",
             )
         finally:
             patcher.stop()
 
     @mock.patch("google.cloud.storage.blob.Blob._do_upload")
-    @mock.patch("google.auth.default", return_value=["foo", None])
     def test_storage_save_gzip(self, *args):
         """
         Test saving a file with gzip enabled.
         """
-        self.storage.gzip = True
         name = "test_storage_save.css"
         content = ContentFile("I should be gzip'd")
 
@@ -564,3 +640,17 @@ class GoogleCloudGzipClientTests(GCloudTestCase):
             self.assertEqual(zfile.read(), b"I should be gzip'd")
         finally:
             patcher.stop()
+
+    def test_storage_read_gzip(self, *args):
+        """
+        Test reading a gzipped file decompresses content only once.
+        """
+        name = "test_storage_save.css"
+        file = GoogleCloudFile(name, "rb", self.storage)
+        blob = mock.MagicMock()
+        file.blob = blob
+        blob.download_to_file = lambda f, checksum=None: f.write(b"No gzip")
+        blob.content_encoding = "gzip"
+        f = file._get_file()
+
+        f.read()  # This should not fail
